@@ -1,0 +1,1109 @@
+---
+title: "Graph Learning Analyses"
+author: "Kate Nussenbaum"
+date: "5/6/24"
+output: 
+    html_document:
+        df_print: 'paged'
+        toc: true
+        toc_float:
+            collapsed: false
+            smooth_scroll: true
+        number_sections: false
+        code_download: true
+        self_contained: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = rprojroot::find_rstudio_root_file())
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, cache = TRUE)
+knitr::opts_chunk$set(fig.path = "figures/results_figures")
+```
+
+```{r libraries}
+library(tidyverse)
+library(afex)
+library(sjPlot)
+library(pander)
+library(knitr)
+library(xtable)
+library(jsonlite)
+library(glue)
+
+#functions
+#determine plotting colors
+plot_colors = c("#DD8D29", "#E2D200", "#46ACC8", "#E58601", "#B40F20")
+
+#define plotting theme
+graph_theme <- function () {
+  theme(
+    text=element_text(family="Arial"),
+    line = element_blank(),
+    title = element_text(size = 20),
+    panel.border = element_rect(fill = "transparent", color="black"),
+    panel.background  = element_blank(),
+    plot.background = element_blank(), 
+    legend.background = element_rect(fill="transparent", colour=NA),
+    legend.key = element_rect(fill="transparent", colour=NA),
+    legend.text = element_text(size = 16),
+    axis.ticks = element_line(color="black"),
+    axis.text = element_text(size = 14),
+    axis.title = element_text(size = 18),
+    strip.text = element_text(size=14)
+  )
+}
+
+#avoid scientific notation
+options(scipen = 100, digits = 4)
+```
+
+```{r directories}
+
+# Read in data
+data_dir = 'data/sub_data/'
+
+```
+
+# Tasks
+
+Participants completed three tasks: 1.) Graph-learning, 2.) Graph-parsing, and 3.) Graph-reconstruction.
+
+## Learning task
+In the learning task, on each trial, participants saw a series of planets with overlaid gabor patches. Participants had to press one of two keys to indicate the 'direction of the wind' on the planet, as indicated by the gabor. Wind directions were determined randomly on every trial.
+
+Unbeknownst to participants, the order of the planets was determined by a random walk along a modular graph. Each planet transitioned with 25% probability to one of 4 other planets. The graph structure created three 'communities' of planets, and two types of transitions: within-community transitions, and between-community transitions. Participants completed a total of 600 learning trials.
+
+
+## Parsing task
+After the learning task, participants completed a 'parsing' task, in which they once again saw a sequence of planets (following the same random walk) and had to press the space bar to indicate when they believed they had entered a different part of the galaxy.
+
+Participants completed a total of 600 parsing trials.
+
+## Graph reconstruction
+At the end of the experiment, participants saw all the planets placed randomly on the screen. They were told to drag them around the screen to create a map based on how they thought 'the planets were spread out across the universe.' Participants could click on each planet to move them around the screen, pressing a final button to submit their map when they were happy with it.
+
+
+```{r define functions}
+#z-score
+scale_this <- function(x){
+  (x - mean(x, na.rm=TRUE)) / sd(x, na.rm=TRUE)
+}
+
+
+#print results from linear mixed-effects models
+print_model_results <- function(model_name) {
+  
+  #get F and p values
+  model_effects <- as.data.frame(nice(model_name, 
+                      sig_symbols = rep("", 4))) %>%
+  select(Effect, df, `F`, p.value) 
+
+  #get coefficients and standard error
+  coefficients <- as.data.frame(coef(summary(model_name))) %>%
+    select(Estimate, `Std. Error`) %>%
+    rownames_to_column("Effect") %>%
+    mutate(Effect = gsub("[0-9]", "", Effect))   #remove numbers from effects
+
+  #merge 
+  model_results <- full_join(coefficients, model_effects, by = "Effect") %>%
+    select(Effect, Estimate, `Std. Error`, df, `F`, p.value) 
+  
+  #return
+  return(model_results)
+}
+
+#print results from logistic mixed-effects models
+print_log_model_results <- function(model_name) {
+  
+  #get F and p values
+  model_effects <- as.data.frame(nice(model_name, 
+                      sig_symbols = rep("", 4))) %>%
+  select(Effect, df, Chisq, p.value) 
+
+  #get coefficients and standard error
+  coefficients <- as.data.frame(coef(summary(model_name))) %>%
+    select(Estimate, `Std. Error`) %>%
+    rownames_to_column("Effect") %>%
+    mutate(Effect = gsub("[0-9]", "", Effect))   #remove numbers from effects
+
+  #merge 
+  model_results <- full_join(coefficients, model_effects, by = "Effect") %>%
+    select(Effect, Estimate, `Std. Error`, df, `Chisq`, p.value) 
+  
+  #return
+  return(model_results)
+}
+
+
+```
+
+```{r import data}
+#read and compile all data
+data_all <- list.files(path = data_dir,  
+                       pattern = "graph_learning*", 
+                       full.names = TRUE) %>% 
+  lapply(read_csv) %>%
+  bind_rows
+
+```
+
+
+
+```{r add demographic data}
+
+#add sub ages
+age_data <- read_csv(glue("data/participant_ages.csv")) %>%
+    select(subject_id = "Subject ID", age = Age)
+
+#convert age to numeric
+age_data$age <- as.numeric(age_data$age)
+
+#join with data
+data_all <- inner_join(data_all, age_data, by = "subject_id") 
+
+#add age info
+data_all <- data_all %>% mutate(age_group = case_when(age < 13 ~ "Children",
+                                age > 12.99 & age < 18 ~ "Adolescents",
+                                age > 17.99 ~ "Adults"))
+
+data_all$age_group <- factor(data_all$age_group, levels = c("Children", "Adolescents", "Adults"))
+```
+
+
+```{r process learning data}
+learning_data <- data_all %>%
+  filter(block %in% c('learnblock1', 'learnblock2')) %>%
+  select(subject_id, age, age_group, block, trial_index, stimulus, planet, community, rt, key_press, learning_correct_response) %>%
+    group_by(subject_id, block) %>%
+    mutate(prev_community = lag(community),
+           within_block_trial = rank(trial_index),
+           block_number = parse_number(as.character(block)),
+           trial = within_block_trial * block_number,
+           correct = ifelse(key_press == learning_correct_response, 1, 0)) %>%
+    ungroup() %>%
+    mutate(transition_type = ifelse(prev_community == community, "within", "between"))
+
+#convert RT to numeric
+learning_data$rt <- as.numeric(learning_data$rt)
+
+```
+
+# Format data for SR modeling
+```{r format for SR modeling}
+#format:
+
+# subject id
+# age
+# block
+# within_block_trial
+# node (1 - 15)
+# target_button 
+# stim_id
+# rt
+# isValid (correct response, rt > 30 ms)
+# exclude_sub
+
+#select relevant columns
+model_data <- learning_data %>%
+  mutate(block_num = parse_number(block), community_num = parse_number(community), prev_community_num = parse_number(prev_community)) %>%
+  select(subject_id, age, block_num, within_block_trial, stim_id = planet, community_num, prev_community_num, transition_type, target_button = learning_correct_response, key_press, correct, rt) %>%
+  mutate(isValid = ifelse(correct == 1 & rt > 200, 1, 0)) 
+
+#identify edge (exterior) vs central (interior) planets
+exterior_planets <- model_data %>%
+  group_by(subject_id, stim_id, community_num, prev_community_num, transition_type) %>%
+  summarize(N = n()) %>%
+  filter(transition_type == "between") %>%
+  mutate(node = case_when(community_num == 1 & prev_community_num == 3 ~ 1,
+                          community_num == 1 & prev_community_num == 2 ~ 5,
+                          community_num == 2 & prev_community_num == 1 ~ 6,
+                          community_num == 2 & prev_community_num == 3 ~ 10,
+                          community_num == 3 & prev_community_num == 1 ~ 15,
+                          community_num == 3 & prev_community_num == 2 ~ 11),
+         planet_type = "exterior") %>%
+  ungroup() %>%
+  select(subject_id, stim_id, node, planet_type)
+
+
+interior_planets_temp <- model_data %>%
+  select(subject_id, community_num, stim_id) %>%
+  unique()
+
+#join
+interior_planets <- full_join(interior_planets_temp, exterior_planets, by = c("subject_id", "stim_id")) %>%
+  mutate(planet_type = replace_na(planet_type, "interior")) %>%
+  filter(planet_type == "interior") %>%
+  group_by(subject_id, community_num) %>%
+  mutate(node_temp = rank(stim_id),
+         node = node_temp + ((community_num-1)*5) + 1) %>%
+  ungroup() %>%
+  select(subject_id, stim_id, node, planet_type)
+
+#create all planets dataframe
+all_planets = rbind(interior_planets, exterior_planets)
+
+#recode NA rts as 0
+model_data <- model_data %>%
+  mutate(rt = replace_na(rt, 0))
+
+#put back into model data
+model_data_node <- full_join(model_data, all_planets, by = c("subject_id", "stim_id")) %>%
+  select(subject_id, age, block_num, within_block_trial, node, target_button, stim_id, rt, isValid)
+```
+
+
+# Apply participant exclusions 
+Participants were excluded from the learning task if they meet any of the following criteria:
+- More than 20 browser interactions
+- Less than 75% accuracy on learning trials (excluding missed trials)
+- More than 20% (120) of learning trials missed 
+- More than 20% (120 of learning trials fast (< 200 ms))
+
+```{r compute learning data exclusions}
+
+#determine bad subjects based on browser interactions
+bad_browser_subs <- data_all %>%
+  filter(browser_interactions > 20) %>%
+  select(subject_id, age_group) %>%
+  unique()
+
+#determine exclusions
+learning_data_summary <- learning_data %>%
+  group_by(subject_id, age_group) %>%
+  summarize(missed_trials = sum(key_press == "null"),
+            inaccurate_trials = sum(correct == 0),
+            accurate_trials = sum(correct == 1),
+            mean_acc = accurate_trials/(accurate_trials + inaccurate_trials - missed_trials),
+            mean_rt = mean(rt, na.rm = T),
+            fast_rts = sum(rt < 200, na.rm = T),
+            n_trials = n()) %>%
+  mutate(exclude_missed = ifelse(missed_trials > 120, 1, 0),
+         exclude_acc = ifelse(mean_acc < .75, 1, 0),
+         exclude = sum(exclude_missed + exclude_acc)) 
+
+#
+bad_missed_subs <- learning_data_summary %>%
+  filter(exclude_missed == 1)
+
+bad_acc_subs <- learning_data_summary %>%
+  filter(exclude_acc == 1)
+
+bad_rt_subs <- learning_data_summary %>%
+  filter(fast_rts > 120)
+
+incomplete_subs <- learning_data_summary %>%
+  filter(n_trials < 600)
+```
+
+```{r label bad participants in model data}
+
+final_model_data <- model_data_node %>%
+  mutate(bad_browser_sub = ifelse(subject_id %in% bad_browser_subs$subject_id, 1, 0),
+         bad_missed_trials = ifelse(subject_id %in% bad_missed_subs$subject_id, 1, 0),
+         bad_acc_trials = ifelse(subject_id %in% bad_acc_subs$subject_id, 1, 0),
+         fast_rt_subs = ifelse(subject_id %in% bad_rt_subs$subject_id, 1, 0),
+         incomplete_subs = ifelse(subject_id %in% incomplete_subs$subject_id, 1, 0))
+
+
+#save csv
+write_csv(final_model_data, "data/processed/model_data.csv")
+
+```
+
+```{r plot participant exclusions}
+
+#browser interactions
+browser_int_plot <- ggplot(data_all %>% select(subject_id, age_group, browser_interactions) %>% unique(), aes(x = browser_interactions)) +
+  geom_histogram(fill = plot_colors[3], color = 'black', bins = 100) +
+  xlab("Browser Interactions") +
+  ylab("Number of Participants") +
+  geom_vline(xintercept = 20, linetype = 'dashed') +
+  graph_theme()
+browser_int_plot 
+
+#missed learning trials
+missed_trials_plot <- ggplot(learning_data_summary, aes(x = missed_trials)) +
+  geom_histogram(fill = plot_colors[3], color = 'black', bins = 100) +
+  xlab("Missed Learning Trials") +
+  ylab("Number of Participants") +
+  geom_vline(xintercept = 120, linetype = 'dashed') +
+  graph_theme()
+missed_trials_plot
+
+#inaccuracy
+learning_acc_plot <- ggplot(learning_data_summary, aes(x = mean_acc)) +
+  geom_histogram(fill = plot_colors[3], color = 'black', bins = 100) +
+  xlab("Learning Accuracy") +
+  ylab("Number of Participants") +
+  geom_vline(xintercept = .75, linetype = 'dashed') +
+  graph_theme()
+learning_acc_plot
+
+#fast reaction times
+fast_rt_plot <- ggplot(learning_data_summary, aes(x = fast_rts)) +
+  geom_histogram(fill = plot_colors[3], color = 'black', bins = 100) +
+  xlab("Fast RTs (< 150 ms)") +
+  ylab("Number of Participants") +
+  geom_vline(xintercept = 120, linetype = 'dashed') +
+  graph_theme()
+fast_rt_plot
+
+```
+
+```{r apply learning exclusions}
+
+#count excluded participants 
+n_bad_browser <- bad_browser_subs %>%
+  group_by(age_group, .drop = F) %>%
+  summarize(exclude_browser = n())
+
+#exclude from learning data summary
+learning_summary2 <- learning_data_summary %>%
+  filter(! subject_id %in% bad_browser_subs$subject_id)
+
+#now count missed exclusions
+n_missed_trials <- learning_summary2 %>%
+  filter(exclude_missed == 1) %>%
+  group_by(age_group, .drop = F) %>%
+  summarize(exclude_missed_trials = n())
+
+bad_missed_subs <- learning_data_summary %>% 
+  filter(exclude_missed == 1)
+
+#exclude from learning data summary
+learning_summary3 <- learning_summary2 %>%
+  filter(!subject_id %in% bad_missed_subs$subject_id)
+
+#now count accuracy exclusions
+n_low_acc <- learning_summary3 %>%
+  filter(exclude_acc == 1) %>%
+  group_by(age_group, .drop = F) %>%
+  summarize(exclude_acc = n())
+
+bad_acc_subs <- learning_data_summary %>% 
+  filter(exclude_acc == 1)
+
+#exclude from learning data summary
+learning_summary4 <- learning_summary3 %>%
+  filter(!subject_id %in% bad_acc_subs$subject_id)
+
+#now count RT exclusions
+n_fast_rt <- learning_summary4 %>%
+  filter(fast_rts > 120) %>%
+  group_by(age_group, .drop = F) %>%
+  summarize(exclude_fast_rts = n()) %>%
+  mutate(exclude_fast_rts = replace_na(exclude_fast_rts, 0))
+  
+#make table of exclusions
+exclusion_data <- full_join(n_bad_browser, n_missed_trials, by = "age_group") %>%
+  left_join(., n_low_acc, by="age_group") %>%
+  left_join(., n_fast_rt, by="age_group") %>%
+  rowwise() %>%
+  mutate(total_excluded = exclude_browser + exclude_missed_trials + exclude_acc + exclude_fast_rts)
+pander(exclusion_data)
+  
+#determine overall bad learning subs
+good_learning_subs <- learning_data_summary %>%
+  filter(exclude == 0) %>%
+  filter(fast_rts < 120)
+
+#filter based on browser interactions
+filtered_learning_data <- learning_data %>%
+  filter(! subject_id %in% bad_browser_subs$subject_id) %>%
+  filter(subject_id %in% good_learning_subs$subject_id) %>%
+  filter(! subject_id %in% incomplete_subs$subject_id)
+
+#determine number of included participants
+included_participants <- filtered_learning_data %>%
+  select(subject_id, age_group) %>%
+  unique() %>%
+  group_by(age_group) %>%
+  summarize(N = n())
+pander(included_participants)
+
+```
+
+# Results
+
+## Learning
+For all learning analyses, we will examine only accurate trials in which participants responded in > 200 ms
+
+### Response time distributions
+
+```{r plot rt cutoff}
+
+ggplot(filtered_learning_data %>% filter(correct == T), aes(x = rt)) +
+    facet_wrap(~age_group) +
+    geom_histogram(color = "black", fill = plot_colors[3], bins = 40) +
+    xlab("Reaction Time (ms) on Correct Trials") +
+    ylab("Count") +
+    geom_vline(xintercept = 200, linetype = "dashed") +
+    graph_theme()
+
+```
+
+### Response times by age, trial, planet lag, transition type
+```{r planet lag data processing}
+
+planet_encountered_data <- filtered_learning_data %>%
+  group_by(subject_id) %>%
+  group_by(planet) %>%
+  mutate(planet_lag = trial - lag(trial, default = first(trial)) - 1) %>%
+  ungroup() %>%
+  select(rt, transition_type, trial, subject_id, age, planet, learning_correct_response, planet_lag, correct) %>%
+  filter(planet_lag > 0)
+
+#sanity check - is within < between?
+planet_encountered_means <- planet_encountered_data %>%
+  group_by(transition_type) %>%
+  summarize(mean_lag = mean(planet_lag),
+            sd_lag = sd(planet_lag))
+
+pander(planet_encountered_means)
+
+#filter planet encountered data
+planet_encountered_data <- planet_encountered_data %>%
+  filter(planet_lag > 0) %>%
+  filter(correct == T) %>% 
+  filter(rt > 200) %>%
+  drop_na()
+
+```
+
+```{r learning rt model}
+
+#transform variables
+planet_encountered_data$log_rt <- log(planet_encountered_data$rt)
+planet_encountered_data$age_z <- scale_this(planet_encountered_data$age)
+planet_encountered_data$trial_z <- scale_this(planet_encountered_data$trial)
+planet_encountered_data$planet_lag_z <- scale_this(planet_encountered_data$planet_lag)
+planet_encountered_data$transition_type <- factor(planet_encountered_data$transition_type)
+planet_encountered_data$learning_correct_response <- factor(planet_encountered_data$learning_correct_response)
+
+#run RT analysis
+rt_by_planet_encounter_transition_type <- mixed(log_rt ~ age_z * trial_z * planet_lag_z * transition_type + learning_correct_response + (planet_lag_z + trial_z + transition_type + learning_correct_response || subject_id),
+                               data = planet_encountered_data,
+                               expand_re = T,
+                               method = "S",
+                               control = lmerControl(optCtrl=list(maxfun=1e6),
+                                                     optimizer = "bobyqa"))
+
+print_model_results(rt_by_planet_encounter_transition_type)
+
+#note: is singular with planet random effect, pruned
+#note: is singular with interactions in RE, pruned
+
+```
+
+
+#### Plot: Response times across planet lags
+```{r plot planet lag RT effects}
+
+#compute subject means
+sub_mean_rts <- planet_encountered_data %>%
+    group_by(planet_lag, subject_id) %>%
+    summarize(mean_sub_rt = mean(rt),
+              sd_sub_rt = sd(rt),
+              N = n()) %>%
+  filter(planet_lag < 100)
+
+group_mean_rts <- sub_mean_rts %>%
+    group_by(planet_lag) %>%
+    summarize(mean_rt = mean(mean_sub_rt),
+              se_rt = sd(mean_sub_rt/sqrt(n())),
+              mean_num_trials = mean(N)
+              )
+
+planet_recency_rt_plot <- ggplot(group_mean_rts, aes(x =  planet_lag, y = mean_rt)) +
+  geom_point(color = plot_colors[5]) +
+  geom_smooth(method = "lm", color = "black", fill = "black") + 
+  ylab("Mean Response Time (ms)") +
+  xlab("Trials Since Last Same-Planet Encounter") + 
+  graph_theme()
+planet_recency_rt_plot
+```
+
+#### Plot: Response times across planet lags with transition type
+```{r plot planet lag x transition type RT effects, fig.height = 5, fig.width = 4}
+
+#rerun model to extract lmer object for plotting
+rt_by_planet_encounter_transition_type.lmer <- mixed(log_rt ~ age_z * trial_z * planet_lag_z * transition_type + learning_correct_response + (planet_lag_z + trial_z + transition_type + learning_correct_response || subject_id),
+                               data = planet_encountered_data,
+                               expand_re = T,
+                               method = "S",
+                               control = lmerControl(optCtrl=list(maxfun=1e6),
+                                                     optimizer = "bobyqa"),
+                               return = "merMod")
+
+plot_model(rt_by_planet_encounter_transition_type.lmer, 
+           type = "pred", 
+           line.size = 1.5,
+           terms = c("planet_lag_z", "transition_type"), 
+           colors = c(plot_colors[1], plot_colors[3]),
+           legend.title="Transition Type") +
+  xlab("Planet Lag (z-scored)") +
+  ylab("Predicted Log Response Time (ms)") +
+  ggtitle("") + 
+  graph_theme() +
+  theme(legend.position = "top",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11))
+```
+
+#### Plot: Response times across trials with transition type
+```{r plot planet lag x trial RT effects, fig.height = 5, fig.width = 4}
+
+plot_model(rt_by_planet_encounter_transition_type.lmer, 
+           type = "pred", 
+           line.size = 1.5,
+           terms = c("trial_z", "transition_type"), 
+           colors = c(plot_colors[1], plot_colors[3]),
+           legend.title="Transition Type") +
+  xlab("Trial (z-scored)") +
+  ylab("Predicted Log Response Time (ms)") +
+  ggtitle("") + 
+  graph_theme() +
+  theme(legend.position = "top",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11))
+```
+
+## Parsing
+
+```{r parsing data processing}
+
+#get parsing data
+parsing_data <- data_all %>%
+    filter(block %in% c("parseblock1", "parseblock2", "parseblock3", "parseblock4"))
+
+#determine subjects included in learning
+learning_subs <- filtered_learning_data %>%
+  select(subject_id) %>%
+  unique()
+
+#determine communities from learning
+communities <- filtered_learning_data %>%
+  select(subject_id, planet, community) %>%
+  unique()
+
+#filter based on learning
+parsing_data_filtered <- parsing_data %>%
+  filter(subject_id %in% learning_subs$subject_id) %>%
+  select(subject_id, age, age_group, trial_index, block, rt, stimulus, parse) %>%
+  mutate(planet = extract_numeric(stimulus)) 
+
+#label communities
+parsing_data_filtered <- full_join(parsing_data_filtered, communities, by = c('subject_id', 'planet'))
+
+#determine transition type
+parsing_data_filtered <- parsing_data_filtered %>%
+    mutate(prev_community = lag(community),
+           block_number = parse_number(as.character(block))) %>%
+    ungroup() %>%
+    mutate(transition_type = ifelse(prev_community == community, "within", "between"))
+
+#determine trial number
+parsing_data_filtered <- parsing_data_filtered %>%
+  group_by(subject_id) %>%
+  mutate(trial = rank(trial_index)) %>%
+  ungroup()
+```
+
+### Parsing responses by age, trial, transition type
+```{r parsing model}
+
+#select variables
+parsing_model_data <- parsing_data_filtered %>%
+  select(subject_id, parse, rt, transition_type, trial, age, age_group, planet) %>%
+  filter(rt > 200) %>%
+  drop_na()
+
+#scale
+parsing_model_data$trial_z <- scale_this(parsing_model_data$trial)
+parsing_model_data$age_z <- scale_this(as.numeric(parsing_model_data$age))
+parsing_model_data$subject_id <- factor(parsing_model_data$subject_id)
+parsing_model_data$planet <- factor(parsing_model_data$planet)
+
+
+#run parsing analysis
+parsing_by_transition_type <- mixed(parse ~ age_z * trial_z * transition_type  + (trial_z * transition_type|| subject_id) + (1|planet),
+                                    family = "binomial",
+                                    data = parsing_model_data,
+                                    control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)),
+                                    expand_re = T,
+                                    method = "LRT")
+
+print_log_model_results(parsing_by_transition_type)
+```
+
+#### Plot: Parsing responses by age group and transition type
+```{r plot parsing, fig.height = 5, fig.width = 6}
+
+parsing_sub_means <- parsing_model_data %>%
+  group_by(subject_id, age_group, transition_type) %>%
+  summarize(mean_sub_parse = mean(parse, na.rm = T))
+
+parsing_group_means <- parsing_sub_means %>%
+  group_by(age_group, transition_type) %>%
+  summarize(mean_parse = mean(mean_sub_parse),
+            se_parse = sd(mean_sub_parse)/ sqrt(n()))
+
+#plot
+parsing_plot <- ggplot(parsing_sub_means, aes(x = transition_type, y = mean_sub_parse, color = transition_type)) +
+    facet_wrap(~age_group) +
+    geom_point() +
+    geom_line(aes(group = subject_id), color = "lightgrey") +
+    geom_line(data = parsing_group_means, aes(x = transition_type, y = mean_parse, group = age_group), color = "black") +
+    geom_point(data = parsing_group_means, aes(x = transition_type, y = mean_parse), size = 3, shape = 23, fill = "black") +
+    geom_errorbar(data = parsing_group_means, aes(x = transition_type, y = mean_parse, ymin = mean_parse - se_parse, ymax = mean_parse + se_parse), width =.1, color = "black") +
+    xlab("Transition Type") +
+    ylab("Proportion of Parsing Responses") +
+    scale_color_manual(values = c(plot_colors[1], plot_colors[3]), name = "Transition Type") +
+    graph_theme() +
+    theme(legend.position = "none") 
+ # ggtitle("Parsing")
+parsing_plot
+```
+
+### Parsing responses by age, trial, transition type, planet lag
+
+```{r parsing based on planet recency data processing}
+
+parsing_planet_recency_data <- parsing_data_filtered %>%
+  group_by(subject_id) %>%
+  group_by(planet) %>%
+  mutate(planet_lag = trial - lag(trial, default = first(trial)) - 1) %>%
+  ungroup() %>%
+  filter(rt > 200) %>%
+  select(subject_id, parse, rt, transition_type, trial, age, age_group, planet, planet_lag) %>%
+  drop_na() %>%
+  filter(planet_lag > 0)
+
+```
+
+```{r parsing model with both recency and transition type}
+
+parsing_planet_recency_data$age_z <- scale_this(parsing_planet_recency_data$age)
+parsing_planet_recency_data$trial_z <- scale_this(parsing_planet_recency_data$trial)
+parsing_planet_recency_data$planet_lag_z <- scale_this(parsing_planet_recency_data$planet_lag)
+parsing_planet_recency_data$parse <- factor(parsing_planet_recency_data$parse)
+
+#run parsing analysis
+parsing_by_planet_encounter_transition_type <- mixed(parse ~ age_z * trial_z * planet_lag_z * transition_type + (planet_lag_z + transition_type || subject_id),
+                               data = parsing_planet_recency_data,
+                               family = "binomial",
+                               control = glmerControl(optimizer="bobyqa", optCtrl=list(maxfun=1e6)),
+                               expand_re = T,
+                               method = "LRT")
+
+print_log_model_results(parsing_by_planet_encounter_transition_type)
+
+
+# effects of:
+# age
+# trials since planet 
+# transition type
+# trial x trials since planet
+# age x transition type
+# trial x transition type
+
+```
+
+## Graph reconstruction
+```{r read in reconstruction data}
+
+graph_data <- list.files(path = data_dir,  
+                       pattern = "graph_reconstruction*", 
+                       full.names = TRUE) %>% 
+  lapply(read_csv) %>%
+  bind_rows 
+
+#add communities
+graph_data <- inner_join(graph_data, communities, by = c('subject_id', 'planet'))
+
+```
+
+```{r compute within and between distance}
+
+compute_mean_distances <- function(df) {
+  subjects <- unique(df$subject_id) #create list of subjects
+  results <- data.frame() #create data frame with subject id
+  
+  for (subject in subjects) {
+    subject_df <- df[df$subject_id == subject, ]
+    communities <- unique(subject_df$community)
+    
+    within_community_distances <- numeric(length(communities))
+    between_community_distances <- numeric(length(communities))
+    index = 0
+    for (i in 1:length(communities)) {
+      for (j in 1:length(communities)) {
+        if (i == j) {
+            
+          # Calculate mean distance within the same community
+          community_df <- subject_df[subject_df$community == communities[i], ]
+          distance_matrix <- proxy::dist(community_df[, c("x", "y")], method = "euclidean")
+          within_community_distances[i] <- mean(distance_matrix)
+        } 
+          
+          
+          else if (i ==1 && j == 2 || i ==1 && j == 3 || i == 2 && j == 3) {
+          index = index + 1
+          # Calculate mean distance between different communities
+          community1_df <- subject_df[subject_df$community == communities[i], ]
+          community2_df <- subject_df[subject_df$community == communities[j], ]
+          distance_matrix <- proxy::dist(community1_df[, c("x", "y")], community2_df[, c("x", "y")], method = "euclidean")
+          between_community_distances[index]<- mean(distance_matrix)
+ 
+        }
+      }
+    }
+    
+    
+    results <- rbind(results, data.frame(subject_id = subject, 
+                                         within_community = mean(within_community_distances),
+                                         between_community = mean(between_community_distances)))
+  }
+  
+  return(results)
+}
+
+# Call the function to compute mean distances
+mean_distances <- compute_mean_distances(graph_data)
+
+#filter to only include good learning subs
+
+# add age
+mean_distances <- inner_join(mean_distances, age_data, by = c("subject_id")) %>%
+    filter(subject_id %in% learning_subs$subject_id) %>%
+  mutate(age_group = case_when(age < 13 ~ "Children",
+                                age > 12.99 & age < 18 ~ "Adolescents",
+                                age > 17.99 ~ "Adults"))
+
+mean_distances$age_group <- factor(mean_distances$age_group, levels = c("Children", "Adolescents", "Adults"))
+
+#pivot longer
+mean_distances_long <- mean_distances %>%
+    pivot_longer(cols = c(within_community, between_community),
+                 values_to = "mean_distance",
+                 names_to = c("type", "junk"),
+                 names_sep = "_community") %>%
+    select(-junk)
+```
+
+### Graph reconstruction distances by age and transition type
+
+```{r graph reconstruction model}
+
+#scale age
+mean_distances_long$age_z <- scale_this(mean_distances_long$age)
+
+graph_reconstruction_model <- mixed(mean_distance ~ age_z * type + (1|subject_id),
+                                    data = mean_distances_long,
+                                    method = "S")
+
+print_model_results(graph_reconstruction_model)
+```
+
+
+#### Plot: Graph reconstruction distance by type and age group
+```{r plot mean distance by type and age, fig.height = 5, fig.width = 6}
+
+#compute subject means
+sub_mean_distances <- mean_distances_long %>%
+    group_by(type, subject_id, age_group) %>%
+    summarize(sub_mean_distance = mean(mean_distance))
+
+age_group_distances <- sub_mean_distances %>%
+    group_by(type, age_group) %>%
+    summarize(mean_distance = mean(sub_mean_distance),
+              se_distance = sd(sub_mean_distance/sqrt(n()))
+              )
+
+age_distance_plot <- ggplot(sub_mean_distances, aes(x = type, y = sub_mean_distance, color = type)) +
+    facet_wrap(~age_group) +
+    geom_point() +
+    geom_line(aes(group = subject_id), color = "lightgrey") +
+    geom_line(data = age_group_distances, aes(x = type, y = mean_distance, group = age_group), color = "black") +
+    geom_point(data = age_group_distances, aes(x = type, y = mean_distance), size = 3, shape = 23, fill = "black") +
+    geom_errorbar(data = age_group_distances, aes(x = type, y = mean_distance, ymin = mean_distance - se_distance, ymax = mean_distance + se_distance), width =.1, color = "black") +
+    xlab("Distance Type") +
+    ylab("Mean Distance (pixels)") +
+    scale_color_manual(values = c(plot_colors[1], plot_colors[3]), name = "Distance Type") +
+    graph_theme() +
+    theme(legend.position = "none") # +
+ # ggtitle("Graph Reconstruction")
+age_distance_plot
+
+```
+
+
+
+# Model-derived parameter analyses
+
+```{r read in julia modeling results}
+
+#read in modeling results
+model_results <- read_csv("data/processed/modeling_results.csv")
+
+#combine with age
+model_results <- inner_join(model_results, age_data, by = c("subject_id"))
+```
+
+## Relations between parameters and age
+### Plot: Relation between β_C and age
+
+```{r beta anticipation age plot, fig.height = 5, fig.width = 5}
+
+#plot correlation between age and beta_anticipation
+ggplot(model_results, aes(x = age, y = β_anticipation)) +
+  geom_point(color = plot_colors[5]) +
+  geom_smooth(method = "lm", color = 'black') +
+  xlab("Age") +
+  ylab(expression(beta[C])) +
+  graph_theme()
+```
+
+### Plot: Relation between β_R and age
+
+```{r beta zero age plot, fig.height = 5, fig.width = 5}
+
+ggplot(model_results, aes(x = age, y = β_zero_order)) +
+  geom_point(color = plot_colors[5]) +
+  geom_smooth(method = "lm", color = "black") +
+  xlab("Age") +
+  ylab(expression(beta[R])) +
+  graph_theme()
+```
+
+## Relations between parameters and explicit knowledge
+
+### Relation between β_C and graph reconstruction
+```{r model relation between beta_c and graph distance proportion}
+
+#join with dist prop
+data <- inner_join(model_results, mean_distances_long, by = c("subject_id", "age"))
+
+#z-score variables
+data$age_z <- scale_this(data$age)
+data$beta_anticipation_z <- scale_this(data$β_anticipation)
+
+#run model
+anticipation_graph_dist_model <- mixed(mean_distance ~ type * beta_anticipation_z * age_z + (1 |subject_id),
+                                       data = data,
+                                       method = "S")
+print_model_results(anticipation_graph_dist_model)
+```
+
+
+#### Plot: β_C and graph reconstruction
+```{r plot beta_c and graph distance, fig.height = 5, fig.width = 4}
+
+#plot
+beta_anticipation_dist_plot <- ggplot(data, aes(x = β_anticipation, y = mean_distance, color = type, fill = type)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    xlab(expression(beta[C])) +
+    ylab("Mean Distance (pixels)") +
+    scale_color_manual(values = c(plot_colors[1], plot_colors[3]), name = "Distance Type") +
+    scale_fill_manual(values = c(plot_colors[1], plot_colors[3]), name = "Distance Type") +
+    graph_theme() +
+  theme(legend.position = "top",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11))
+beta_anticipation_dist_plot
+```
+
+### Relation between β_C and graph reconstruction - difference model
+```{r model relation between beta_c and graph distance difference}
+
+#select only relevant columns from model results
+model_results_select <- model_results %>%
+  select(subject_id, β_anticipation, β_zero_order)
+
+#join with dist prop
+graph_data <- inner_join(model_results_select, mean_distances_long, by = c("subject_id")) %>%
+  pivot_wider(names_from = type, values_from = mean_distance) %>%
+  mutate(dist_diff = between - within)
+
+#z-score variables
+graph_data$age_z <- scale_this(graph_data$age)
+graph_data$beta_anticipation_z <- scale_this(graph_data$β_anticipation)
+
+#run model with age only
+anticipation_graph_dist_model_age_only <- lm(dist_diff ~ age_z,
+                                       data = graph_data)
+
+summary(anticipation_graph_dist_model_age_only)
+
+#run model
+anticipation_graph_dist_model <- lm(dist_diff ~ beta_anticipation_z * age_z,
+                                       data = graph_data)
+
+summary(anticipation_graph_dist_model)
+
+```
+
+### Relation between β_C and parsing
+```{r relation between beta_c and parsing}
+
+#get subject means with age
+parsing_sub_means <- parsing_model_data %>%
+  group_by(subject_id, age, age_group, transition_type) %>%
+  summarize(mean_sub_parse = mean(parse, na.rm = T))
+
+#convert parsing sub means sub
+parsing_sub_means$subject_id <- as.numeric(as.character(parsing_sub_means$subject_id))
+
+#join with dist prop
+parsing_model_data <- inner_join(model_results_select, parsing_sub_means, by = c("subject_id"))
+
+#z-score variables
+parsing_model_data$age_z <- scale_this(parsing_model_data$age)
+parsing_model_data$beta_anticipation_z <- scale_this(parsing_model_data$β_anticipation)
+
+#run model
+anticipation_parsing_model <- mixed(mean_sub_parse ~ transition_type * beta_anticipation_z * age_z + (1 |subject_id),
+                                       data = parsing_model_data,
+                                       method = "LRT")
+anticipation_parsing_model
+summary(anticipation_parsing_model)
+```
+
+#### Plot: Relation between β_C and parsing
+```{r plot beta c and parsing, fig.height = 5, fig.width = 4}
+
+#plot
+beta_anticipation_parsing_plot <- ggplot(parsing_model_data, aes(x = β_anticipation, y = mean_sub_parse, color = transition_type, fill = transition_type)) +
+    geom_point() +
+    geom_smooth(method = "lm") +
+    xlab(expression(beta[C])) +
+    ylab("Mean Proportion of Parsing Responses") +
+    scale_color_manual(values = c(plot_colors[1], plot_colors[3]), name = "Transition Type") +
+    scale_fill_manual(values = c(plot_colors[1], plot_colors[3]), name = "Transition Type") +
+    graph_theme() +
+    theme(legend.position = "top",
+        legend.title = element_text(size = 12),
+        legend.text = element_text(size = 11))
+beta_anticipation_parsing_plot
+```
+
+### Relation between β_C and parsing - difference scores
+```{r relation between beta_c and parsing differences}
+
+#compute difference
+parsing_difference_model_data <- parsing_model_data %>%
+  pivot_wider(names_from = transition_type, values_from = mean_sub_parse) %>%
+  mutate(parse_diff = between - within)
+
+#z-score variables
+parsing_difference_model_data$age_z <- scale_this(parsing_difference_model_data$age)
+parsing_difference_model_data$beta_anticipation_z <- scale_this(parsing_difference_model_data$β_anticipation)
+
+parsing_difference_model_age_only <- lm(parse_diff ~ age_z,
+                                       data = parsing_difference_model_data)
+
+summary(parsing_difference_model_age_only)
+
+#run model with beta_c
+parsing_difference_model <- lm(parse_diff ~ beta_anticipation_z * age_z,
+                                       data = parsing_difference_model_data)
+
+summary(parsing_difference_model)
+
+```
+
+
+### Does beta_c mediate the relation between age and parsing difference scores?
+```{r beta c parsing mediation analysis}
+
+library(mediation)
+library(diagram)
+
+data <- parsing_difference_model_data %>%
+  dplyr::select(subject_id, β_anticipation, β_zero_order, age, parse_diff) 
+
+#standardize all values
+data$parse_diff_z <- scale_this(data$parse_diff)
+data$age_z <- scale_this(data$age)
+data$beta_c_z <- scale_this(data$β_anticipation)
+
+# Does beta_c mediate the relation between age and parsing?
+
+# DV: Parsing
+# IV: Age
+# Mediator: Beta C
+
+# Step 1: The total effect - is there a relation between age and parsing? DV ~ IV
+fit.totaleffect <- lm(parse_diff_z ~ age_z, data)
+summary(fit.totaleffect)
+
+# Answer: Yes.
+
+# Step 2: The effect of the IV on the mediator - is there a relation between age and beta c?
+# Mediator ~ IV
+fit.mediator <- lm(beta_c_z ~ age_z, data)
+summary(fit.mediator)
+
+# Answer: Yes
+
+# Step 3: The effect of the mediator on the DV while controlling for the IV
+# Is there a relation between beta c and parsing when controlling for age?
+# DV ~ IV + Mediator
+fit.dv <- lm(parse_diff_z ~ age_z + beta_c_z, data)
+summary(fit.dv)
+
+# Answer: Yes - evidence for a partial mediation
+
+# Step 4: Causal mediation analysis - treat = IV, mediator = mediator
+med.out = mediate(fit.mediator, fit.dv, treat='age_z', mediator='beta_c_z', boot=T, sims = 10000)
+summary(med.out)
+
+
+#make plot
+# Determine strings for plotting
+a_string = round(fit.mediator$coefficients[[2]],3)
+b_string = round(fit.dv$coefficients[[3]],3)
+c_string = round(fit.totaleffect$coefficients[[2]],3)
+c_prime = round(fit.dv$coefficients[[2]],3)
+
+
+# Plot mediation results 
+plot_data <- c(0, glue("'a = {a_string}***'"), 0,
+          0, 0, 0, 
+          glue("'b = {b_string}*'"), glue("'c = {c_string}** 
+                                          c` = {c_prime}'"), 0)
+M <- matrix(nrow=3, ncol=3, byrow = TRUE, data=plot_data)
+
+plot <- plotmat(M, pos=c(1,2), 
+                name = c( "Beta_C","Age", "Parsing Difference"), 
+                box.type = "rect", box.size = 0.12, box.prop=0.5, curve=0)
+```
+
+
+## Are these relations specific to β_C?
+
+```{r relation between beta_R and graph distance differences}
+
+#z-score beta_c
+graph_data$beta_r_z <- scale_this(graph_data$β_zero_order)
+
+#run model
+betaR_graph_dist_model <- lm(dist_diff ~ beta_r_z * age_z,
+                                       data = graph_data)
+
+summary(betaR_graph_dist_model)
+
+```
+
+```{r relation between beta_r and parsing differences}
+
+#z-score variables
+parsing_difference_model_data$beta_r_z <- scale_this(parsing_difference_model_data$β_zero_order)
+
+#run model with beta_c
+betaR_parsing_difference_model <- lm(parse_diff ~ beta_r_z * age_z,
+                                       data = parsing_difference_model_data)
+
+summary(betaR_parsing_difference_model)
+```
