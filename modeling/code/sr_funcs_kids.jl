@@ -553,7 +553,7 @@ function run_sr_td_future_dutch_rt_shift_trial_alltargets_keys(trials; warmup=-1
         λ = unitnorm(params[i]); i += 1
         β_targets = vcat([0], params[i:i+13]); i += 14
         β_keys = vcat([0], params[i]); i += 1
-        return lik_sr_td_future_dutch_kids(data, rt_μ, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_anticipation, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αM, γ, γ_init, λ, normalize_prediction, naive, warmup, false)
+        return lik_sr_td_future_dutch_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_anticipation, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αM, γ, γ_init, λ, normalize_prediction, naive, warmup, false)
     end
     subs = unique(trials.sub)
     X = [ones(length(subs));];
