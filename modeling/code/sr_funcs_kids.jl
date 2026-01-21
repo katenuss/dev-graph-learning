@@ -140,7 +140,7 @@ function get_subject_M_timeseries(data, γ)
     return M
 end
 
-function lik_baseline_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, warmup, record) where U
+function lik_baseline_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_block, β_targets, β_keys, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, warmup, record) where U
     recency_exp = zeros(U, 15)
     recency_ntrials = zeros(U, 15)
     recency_lag10 = zeros(U, 15)
@@ -150,6 +150,7 @@ function lik_baseline_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets
     lik_trial = 0.
     
     trials = data.trial
+    blocks = data.block
     node = data.node
     targetid = data.targetid
     rt = data.rt
@@ -175,7 +176,7 @@ function lik_baseline_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets
 
         @inbounds if isValid[t]
             # Shifted Log Normal
-            @inbounds rt_pred = rt_μ + β_trial * trials[t] + β_targets[targetid[t]] + β_keys[keyid[t]]
+            @inbounds rt_pred = rt_μ + β_trial * trials[t] + β_block * blocks[t] + β_targets[targetid[t]] + β_keys[keyid[t]]
             @inbounds rt_pred += β_recency_exp * recency_exp[node[t]] + β_recency_ntrials * recency_ntrials[node[t]] + β_recency_lag10 * recency_lag10[node[t]]
             @inbounds rt_pred += β_zero_order * zero_order[node[t]]
             if record; rt_pred_rec[t] = rt_pred; end
@@ -211,7 +212,7 @@ function lik_baseline_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets
     end
 end
 
-function lik_sr_td_future_dutch_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_anticipation, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αM, γ, γ_init, λ, normalize_prediction, naive, warmup, record) where U
+function lik_sr_td_future_dutch_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_block, β_targets, β_keys, β_anticipation, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αM, γ, γ_init, λ, normalize_prediction, naive, warmup, record) where U
     T = zeros(U, 15, 15)
     if naive
         T .+= 1.0/15  # Assume equal probabilities for all transitions
@@ -233,6 +234,7 @@ function lik_sr_td_future_dutch_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, 
     lik_trial = 0.
     
     trials = data.trial
+    blocks = data.block
     node = data.node
     targetid = data.targetid
     rt = data.rt
@@ -268,7 +270,7 @@ function lik_sr_td_future_dutch_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, 
 
         @inbounds if isValid[t]
             # Shifted Log Normal
-            @inbounds rt_pred = rt_μ + β_trial * trials[t] + β_targets[targetid[t]] + β_keys[keyid[t]] + β_anticipation * prediction
+            @inbounds rt_pred = rt_μ + β_trial * trials[t] + β_block * blocks[t] + β_targets[targetid[t]] + β_keys[keyid[t]] + β_anticipation * prediction
             @inbounds rt_pred += β_recency_exp * recency_exp[node[t]] + β_recency_ntrials * recency_ntrials[node[t]] + β_recency_lag10 * recency_lag10[node[t]]
             @inbounds rt_pred += β_zero_order * zero_order[node[t]]
             if record; rt_pred_rec[t] = rt_pred; end
@@ -320,7 +322,7 @@ function lik_sr_td_future_dutch_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, 
     end
 end
 
-function lik_Tpows_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_T1, β_T2, β_T3, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αT, naive, warmup, record) where U
+function lik_Tpows_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_block, β_targets, β_keys, β_T1, β_T2, β_T3, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αT, naive, warmup, record) where U
     T = zeros(U, 15, 15)
     if naive
         T .+= 1.0/15  # Assume equal probabilities for all transitions
@@ -339,6 +341,7 @@ function lik_Tpows_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets, �
     x3 = 0.
     
     trials = data.trial
+    blocks = data.block
     node = data.node
     targetid = data.targetid
     rt = data.rt
@@ -380,7 +383,7 @@ function lik_Tpows_keys(data, rt_μ::U, rt_σ, rt_shift, β_trial, β_targets, �
 
         if isValid[t]
             # Shifted Log Normal
-            @inbounds rt_pred = rt_μ + β_trial * trials[t] + β_targets[targetid[t]] + β_keys[keyid[t]] + prediction
+            @inbounds rt_pred = rt_μ + β_trial * trials[t] + β_block * blocks[t] + β_targets[targetid[t]] + β_keys[keyid[t]] + prediction
             @inbounds rt_pred += β_recency_exp * recency_exp[node[t]] + β_recency_ntrials * recency_ntrials[node[t]] + β_recency_lag10 * recency_lag10[node[t]]
             @inbounds rt_pred += β_zero_order * zero_order[node[t]]
             if record; rt_pred_rec[t] = rt_pred; end
@@ -436,6 +439,7 @@ function run_baseline_rt_shift_trial_alltargets_keys(trials; warmup=-1,
         rt_σ = exp(params[i]); i += 1
         rt_shift = unitnorm(params[i]); i += 1
         β_trial = params[i]; i += 1
+        β_block = params[i]; i += 1
         if add_recency_exp
             β_recency_exp = params[i]; i += 1
             recency_exp_decay = params[i]; i += 1
@@ -462,11 +466,11 @@ function run_baseline_rt_shift_trial_alltargets_keys(trials; warmup=-1,
         end
         β_targets = vcat([0], params[i:i+13]); i += 14
         β_keys = vcat([0], params[i]); i += 1
-        return lik_baseline_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, warmup, false)
+        return lik_baseline_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_block, β_targets, β_keys, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, warmup, false)
     end
     subs = unique(trials.sub)
     X = [ones(length(subs));];
-    varnames = ["rt_μ", "rt_σ", "rt_shift", "β_trial"]
+    varnames = ["rt_μ", "rt_σ", "rt_shift", "β_trial", "β_block"]
     if add_recency_exp
         push!(varnames, "β_recency_exp")
         push!(varnames, "recency_exp_decay")
@@ -514,6 +518,7 @@ function run_sr_td_future_dutch_rt_shift_trial_alltargets_keys(trials; warmup=-1
         rt_σ = exp(params[i]); i += 1
         rt_shift = unitnorm(params[i]); i += 1
         β_trial = params[i]; i += 1
+        β_block = params[i]; i += 1
         β_anticipation = params[i]; i += 1
         if add_recency_exp
             β_recency_exp = params[i]; i += 1
@@ -544,20 +549,20 @@ function run_sr_td_future_dutch_rt_shift_trial_alltargets_keys(trials; warmup=-1
         else
             αM = 0.0
         end
-        γ = (1 - 1e-5) * unitnorm(params[i]); i += 1 # Should be enough to prevent inversion errors
+        γ = .99 * unitnorm(params[i]); i += 1 # Should be enough to prevent inversion errors
         if add_ginit
-            γ_init = (1 - 1e-5) * unitnorm(params[i]); i += 1
+            γ_init = .99 * unitnorm(params[i]); i += 1
         else
             γ_init = γ
         end
         λ = unitnorm(params[i]); i += 1
         β_targets = vcat([0], params[i:i+13]); i += 14
         β_keys = vcat([0], params[i]); i += 1
-        return lik_sr_td_future_dutch_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_anticipation, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αM, γ, γ_init, λ, normalize_prediction, naive, warmup, false)
+        return lik_sr_td_future_dutch_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_block, β_targets, β_keys, β_anticipation, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αM, γ, γ_init, λ, normalize_prediction, naive, warmup, false)
     end
     subs = unique(trials.sub)
     X = [ones(length(subs));];
-    varnames = ["rt_μ", "rt_σ", "rt_shift", "β_trial", "β_anticipation"]
+    varnames = ["rt_μ", "rt_σ", "rt_shift", "β_trial", "β_block", "β_anticipation"]
     if add_recency_exp
         push!(varnames, "β_recency_exp")
         push!(varnames, "recency_exp_decay")
@@ -613,6 +618,7 @@ function run_Tpows_rt_shift_trial_alltargets_keys(trials; warmup=-1, npows=1, na
         rt_σ = exp(params[i]); i += 1
         rt_shift = unitnorm(params[i]); i += 1
         β_trial = params[i]; i += 1
+        β_block = params[i]; i += 1
         β_T1 = 0.0
         β_T2 = 0.0
         β_T3 = 0.0
@@ -655,11 +661,11 @@ function run_Tpows_rt_shift_trial_alltargets_keys(trials; warmup=-1, npows=1, na
         end
         β_targets = vcat([0], params[i:i+13]); i += 14
         β_keys = vcat([0], params[i]); i += 1
-        return lik_Tpows_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_targets, β_keys, β_T1, β_T2, β_T3, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αT, naive, warmup, false)
+        return lik_Tpows_keys(data, rt_μ, rt_σ, rt_shift, β_trial, β_block, β_targets, β_keys, β_T1, β_T2, β_T3, β_recency_exp, recency_exp_decay, β_recency_ntrials, β_recency_lag10, β_zero_order, α_zero_order, αT, naive, warmup, false)
     end
     subs = unique(trials.sub)
     X = [ones(length(subs));];
-    varnames = ["rt_μ", "rt_σ", "rt_shift", "β_trial"]
+    varnames = ["rt_μ", "rt_σ", "rt_shift", "β_trial", "β_block"]
     if npows >= 1
         push!(varnames, "β_T1")
     end
