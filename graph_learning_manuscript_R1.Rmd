@@ -1525,7 +1525,8 @@ parsing_beta_c <- mixed(parse ~ (age_z + beta_c_z) * (transition_type + planet_l
                          expand_re = T,
                          method = "LRT")
 
-parsing_beta_c
+print_log_model_results(parsing_beta_c)
+
 ```
 
 
@@ -1544,7 +1545,9 @@ parsing_beta_r <- mixed(parse ~ (age_z + beta_r_z) * (transition_type + planet_l
                          expand_re = T,
                          method = "LRT")
 
-parsing_beta_r
+print_log_model_results(parsing_beta_r)
+
+
 
 ```
 
