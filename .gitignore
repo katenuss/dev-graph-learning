@@ -1,9 +1,10 @@
 **/.DS_Store
 **/.Rproj.user/
 **/.Rhistory
-**/.RData
+**/.RData*
 **/.Ruserdata
 **/.Rproj
 .Rproj.user
 **/node_modules/
 **/*cache
+**/figures/
